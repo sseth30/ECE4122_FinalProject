@@ -1,55 +1,75 @@
-// PID.h
+/*
+Author: Your Name
+Class: ECE4122 or ECE6122
+Last Date Modified: 11/26/2025
+Description:
+Simple 3D vector type with basic operations.
+*/
+
 #pragma once
-#include <algorithm>
+#include <cmath>
 
-// Simple PID controller used per axis (x, y, z)
-struct PID
+struct Vec3
 {
-    double Kp;
-    double Ki;
-    double Kd;
+    double x;
+    double y;
+    double z;
 
-    double integral;
-    double prevError;
-    bool   first;
+    Vec3(double xx = 0.0, double yy = 0.0, double zz = 0.0)
+        : x(xx), y(yy), z(zz) {}
 
-    PID(double p = 0.0, double i = 0.0, double d = 0.0)
-        : Kp(p), Ki(i), Kd(d),
-          integral(0.0), prevError(0.0), first(true)
-    {}
-
-    // error = setpoint - processVariable
-    double update(double error, double dt)
+    Vec3 operator+(const Vec3& rhs) const
     {
-        if (dt <= 0.0) return 0.0;
-
-        // Proportional
-        double P = Kp * error;
-
-        // Integral with simple anti-windup
-        integral += error * dt;
-        const double Imax = 50.0;
-        integral = std::max(std::min(integral, Imax), -Imax);
-        double I = Ki * integral;
-
-        // Derivative
-        double derivative = 0.0;
-        if (!first)
-            derivative = (error - prevError) / dt;
-        else
-            first = false;
-
-        double D = Kd * derivative;
-
-        prevError = error;
-
-        return P + I + D;
+        return Vec3(x + rhs.x, y + rhs.y, z + rhs.z);
     }
 
-    void reset()
+    Vec3 operator-(const Vec3& rhs) const
     {
-        integral   = 0.0;
-        prevError  = 0.0;
-        first      = true;
+        return Vec3(x - rhs.x, y - rhs.y, z - rhs.z);
+    }
+
+    Vec3 operator*(double s) const
+    {
+        return Vec3(x * s, y * s, z * s);
+    }
+
+    Vec3 operator/(double s) const
+    {
+        return Vec3(x / s, y / s, z / s);
+    }
+
+    Vec3& operator+=(const Vec3& rhs)
+    {
+        x += rhs.x;
+        y += rhs.y;
+        z += rhs.z;
+        return *this;
+    }
+
+    double length() const
+    {
+        return std::sqrt(x * x + y * y + z * z);
+    }
+
+    Vec3 normalized() const
+    {
+        double len = length();
+        if (len > 0.0)
+            return *this / len;
+        return Vec3(0.0, 0.0, 0.0);
+    }
+
+    static Vec3 cross(const Vec3& a, const Vec3& b)
+    {
+        return Vec3(
+            a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x
+        );
+    }
+
+    static double dot(const Vec3& a, const Vec3& b)
+    {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
     }
 };

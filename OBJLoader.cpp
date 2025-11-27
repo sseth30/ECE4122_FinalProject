@@ -1,205 +1,166 @@
-/*
-Author: <your name>
-Class: ECE4122 or ECE6122
-Last Date Modified: <date>
-
-Description:
- Implementation of the simple Wavefront OBJ loader used to render the UAV mesh.
-*/
-
 #include "OBJLoader.h"
-
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <algorithm> 
+#include <string>      // <-- and this
 
 #ifdef __APPLE__
-#include <GLUT/glut.h>
+#include <OpenGL/gl.h>
 #else
-#include <GL/glut.h>
+#include <GL/gl.h>
 #endif
 
-bool Mesh::loadFromOBJ(const std::string& filePath, double targetBoundingBoxSize)
+bool Mesh::loadFromOBJ(const std::string& filename, double scale)
 {
-    m_triangles.clear();
-
-    std::ifstream file(filePath.c_str());
+    std::ifstream file(filename);
     if (!file)
     {
-        std::cerr << "Failed to open OBJ file: " << filePath << std::endl;
+        std::cerr << "Failed to open OBJ file: " << filename << std::endl;
         return false;
     }
 
-    std::vector<Vec3> vertices;
+    std::vector<Vec3> positions;
     std::vector<Vec3> normals;
 
     std::string line;
     while (std::getline(file, line))
     {
-        if (line.empty())
-        {
+        if (line.empty() || line[0] == '#')
             continue;
-        }
 
         std::istringstream iss(line);
-        std::string prefix;
-        iss >> prefix;
+        std::string tag;
+        iss >> tag;
 
-        if (prefix == "v")
+        if (tag == "v")
         {
             double x, y, z;
             iss >> x >> y >> z;
-            vertices.emplace_back(x, y, z);
+            positions.emplace_back(x * scale, y * scale, z * scale);
         }
-        else if (prefix == "vn")
+        else if (tag == "vn")
         {
             double x, y, z;
             iss >> x >> y >> z;
             normals.emplace_back(x, y, z);
         }
-        else if (prefix == "f")
+        else if (tag == "f")
         {
-            // Faces can have 3 or more vertices. We will read all indices for this face
-            // and triangulate fan style if needed.
-            std::vector<int> vIdx;
-            std::vector<int> nIdx;
+            // We will support faces in these forms:
+            //  f v1 v2 v3
+            //  f v1//n1 v2//n2 v3//n3
+            //  f v1/t1/n1 v2/t2/n2 v3/t3/n3
+            // We will ignore texture coordinates and only care about v and vn.
 
-            std::string token;
-            while (iss >> token)
-            {
-                // Token formats: v, v//n, v/t/n, v/t
-                int vi = 0;
-                int ni = 0;
-
-                size_t firstSlash = token.find('/');
-                size_t secondSlash = std::string::npos;
-                if (firstSlash != std::string::npos)
-                {
-                    secondSlash = token.find('/', firstSlash + 1);
-                }
-
-                if (firstSlash == std::string::npos)
-                {
-                    // Only vertex index.
-                    vi = std::stoi(token);
-                }
-                else
-                {
-                    std::string vPart = token.substr(0, firstSlash);
-                    vi = std::stoi(vPart);
-
-                    if (secondSlash != std::string::npos)
-                    {
-                        std::string nPart = token.substr(secondSlash + 1);
-                        if (!nPart.empty())
-                        {
-                            ni = std::stoi(nPart);
-                        }
-                    }
-                }
-
-                vIdx.push_back(vi);
-                nIdx.push_back(ni);
-            }
-
-            if (vIdx.size() < 3)
-            {
+            std::string f1, f2, f3;
+            iss >> f1 >> f2 >> f3;
+            if (f1.empty() || f2.empty() || f3.empty())
                 continue;
-            }
 
-            // Triangulate the polygon into fan of triangles.
-            for (size_t i = 1; i + 1 < vIdx.size(); ++i)
+            auto parseIndex = [](const std::string& token, int& vi, int& ni)
+{
+            // token can be: "v", "v//n", or "v/t/n"
+            vi = -1;
+            ni = -1;
+
+            // Count slashes
+            int slashCount = 0;
+            for (char c : token)
+                if (c == '/')
+                    ++slashCount;
+
+            if (slashCount == 0)
             {
-                int idx0 = vIdx[0];
-                int idx1 = vIdx[i];
-                int idx2 = vIdx[i + 1];
-
-                Vec3 v0 = vertices[static_cast<size_t>(idx0 - 1)];
-                Vec3 v1 = vertices[static_cast<size_t>(idx1 - 1)];
-                Vec3 v2 = vertices[static_cast<size_t>(idx2 - 1)];
-
-                Vec3 normal;
-                int n0 = nIdx[0];
-                if (!normals.empty() && n0 > 0 && static_cast<size_t>(n0 - 1) < normals.size())
-                {
-                    normal = normals[static_cast<size_t>(n0 - 1)].normalized();
-                }
-                else
-                {
-                    normal = Vec3::cross(v1 - v0, v2 - v0).normalized();
-                }
-
-                Triangle tri;
-                tri.v0 = v0;
-                tri.v1 = v1;
-                tri.v2 = v2;
-                tri.normal = normal;
-                m_triangles.push_back(tri);
+                // Just "v"
+                vi = std::stoi(token) - 1;
+                return;
             }
-        }
-    }
 
-    if (m_triangles.empty())
-    {
-        std::cerr << "No geometry loaded from OBJ file: " << filePath << std::endl;
-        return false;
-    }
+            // General: split by '/'
+            std::stringstream s(token);
+            std::string a, b, c;
+            std::getline(s, a, '/'); // v
+            std::getline(s, b, '/'); // t (ignored)
+            std::getline(s, c, '/'); // n
 
-    // Compute bounding box and scale if requested.
-    if (targetBoundingBoxSize > 0.0)
-    {
-        Vec3 minPt(1e9, 1e9, 1e9);
-        Vec3 maxPt(-1e9, -1e9, -1e9);
+            if (!a.empty())
+                vi = std::stoi(a) - 1;
+            if (!c.empty())
+                ni = std::stoi(c) - 1;
+        };
 
-        for (const Triangle& tri : m_triangles)
-        {
-            const Vec3 verts[3] = { tri.v0, tri.v1, tri.v2 };
+
+
+            int vIdx[3] = { -1, -1, -1 };
+            int nIdx[3] = { -1, -1, -1 };
+
+            parseIndex(f1, vIdx[0], nIdx[0]);
+            parseIndex(f2, vIdx[1], nIdx[1]);
+            parseIndex(f3, vIdx[2], nIdx[2]);
+
+            bool valid = true;
             for (int i = 0; i < 3; ++i)
             {
-                const Vec3& v = verts[i];
-                if (v.x < minPt.x) minPt.x = v.x;
-                if (v.y < minPt.y) minPt.y = v.y;
-                if (v.z < minPt.z) minPt.z = v.z;
-
-                if (v.x > maxPt.x) maxPt.x = v.x;
-                if (v.y > maxPt.y) maxPt.y = v.y;
-                if (v.z > maxPt.z) maxPt.z = v.z;
+                if (vIdx[i] < 0 || vIdx[i] >= static_cast<int>(positions.size()))
+                    valid = false;
             }
-        }
+            if (!valid) continue;
 
-        Vec3 size = maxPt - minPt;
-        double maxDim = std::max(size.x, std::max(size.y, size.z));
-        if (maxDim > 0.0)
-        {
-            double scale = targetBoundingBoxSize / maxDim;
-            Vec3 center = (minPt + maxPt) * 0.5;
-
-            for (Triangle& tri : m_triangles)
+            // Build triangle vertices
+            Vertex verts[3];
+            for (int i = 0; i < 3; ++i)
             {
-                tri.v0 = (tri.v0 - center) * scale;
-                tri.v1 = (tri.v1 - center) * scale;
-                tri.v2 = (tri.v2 - center) * scale;
-                tri.normal = tri.normal.normalized();
+                Vec3 pos = positions[vIdx[i]];
+                Vec3 nrm;
+
+                if (nIdx[i] >= 0 && nIdx[i] < static_cast<int>(normals.size()))
+                    nrm = normals[nIdx[i]];
+                else
+                    nrm = Vec3(0.0, 0.0, 0.0); // we will fix with face normal if needed
+
+                verts[i] = Vertex(pos, nrm);
             }
+
+            Triangle tri(verts[0], verts[1], verts[2]);
+
+            // If normals were all zero, use faceNormal for each vertex
+            if (verts[0].normal.length() < 1e-6 &&
+                verts[1].normal.length() < 1e-6 &&
+                verts[2].normal.length() < 1e-6)
+            {
+                tri.v0.normal = tri.faceNormal;
+                tri.v1.normal = tri.faceNormal;
+                tri.v2.normal = tri.faceNormal;
+            }
+
+            m_triangles.push_back(tri);
         }
     }
 
-    std::cout << "Loaded OBJ '" << filePath << "' with " << m_triangles.size()
-              << " triangles." << std::endl;
-
-    return true;
+    std::cout << "Loaded OBJ '" << filename
+              << "' with " << m_triangles.size() << " triangles.\n";
+    return !m_triangles.empty();
 }
 
 void Mesh::draw() const
 {
     glBegin(GL_TRIANGLES);
-    for (const Triangle& tri : m_triangles)
+    for (const auto& tri : m_triangles)
     {
-        glNormal3d(tri.normal.x, tri.normal.y, tri.normal.z);
+        // Use per-vertex normals if available, otherwise face normal
+        Vec3 n0 = tri.v0.normal.length() > 1e-6 ? tri.v0.normal : tri.faceNormal;
+        Vec3 n1 = tri.v1.normal.length() > 1e-6 ? tri.v1.normal : tri.faceNormal;
+        Vec3 n2 = tri.v2.normal.length() > 1e-6 ? tri.v2.normal : tri.faceNormal;
 
-        glVertex3d(tri.v0.x, tri.v0.y, tri.v0.z);
-        glVertex3d(tri.v1.x, tri.v1.y, tri.v1.z);
-        glVertex3d(tri.v2.x, tri.v2.y, tri.v2.z);
+        glNormal3d(n0.x, n0.y, n0.z);
+        glVertex3d(tri.v0.position.x, tri.v0.position.y, tri.v0.position.z);
+
+        glNormal3d(n1.x, n1.y, n1.z);
+        glVertex3d(tri.v1.position.x, tri.v1.position.y, tri.v1.position.z);
+
+        glNormal3d(n2.x, n2.y, n2.z);
+        glVertex3d(tri.v2.position.x, tri.v2.position.y, tri.v2.position.z);
     }
     glEnd();
 }

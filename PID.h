@@ -1,4 +1,11 @@
-// PID.h
+/*
+Author: Your Name
+Class: ECE4122 or ECE6122
+Last Date Modified: 11/26/2025
+Description:
+Simple PID controller used to compute control forces on each axis.
+*/
+
 #pragma once
 #include <algorithm>
 
@@ -12,54 +19,38 @@ struct PID
     double prevError;
     bool   first;
 
-    double integralLimit;
-    double outputLimit;
-
-    PID(double p = 0.0,
-        double i = 0.0,
-        double d = 0.0,
-        double iLimit = 100.0,
-        double oLimit = 50.0)
+    PID(double p = 0.0, double i = 0.0, double d = 0.0)
         : Kp(p), Ki(i), Kd(d),
-          integral(0.0),
-          prevError(0.0),
-          first(true),
-          integralLimit(iLimit),
-          outputLimit(oLimit)
-    {
-    }
+          integral(0.0), prevError(0.0), first(true)
+    {}
 
-    // error = (setpoint - processVariable)
+    // error = setpoint - processVariable
     double update(double error, double dt)
     {
-        if (dt <= 0.0) return 0.0;
+        if (dt <= 0.0)
+            return 0.0;
 
-        // Proportional
+        // proportional
         double P = Kp * error;
 
-        // Integral with anti-windup
+        // integral with simple anti windup
         integral += error * dt;
-        if (integral > integralLimit)  integral = integralLimit;
-        if (integral < -integralLimit) integral = -integralLimit;
+        const double Imax = 100.0;
+        if (integral > Imax)  integral = Imax;
+        if (integral < -Imax) integral = -Imax;
         double I = Ki * integral;
 
-        // Derivative
+        // derivative
         double derivative = 0.0;
         if (!first)
             derivative = (error - prevError) / dt;
         else
             first = false;
+
         double D = Kd * derivative;
 
         prevError = error;
-
-        double out = P + I + D;
-
-        // Output clamp
-        if (out >  outputLimit) out =  outputLimit;
-        if (out < -outputLimit) out = -outputLimit;
-
-        return out;
+        return P + I + D;
     }
 
     void reset()
