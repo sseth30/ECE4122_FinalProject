@@ -1,15 +1,15 @@
 /*
-Author: Your Name
+Author: Satchit Seth
 Class: ECE4122
-Last Date Modified: 11/26/2025
+Last Date Modified: 12/01/2025
 
 Description:
  15 UAVs:
-   • Start on the football field at 0, 25, 50, 25, 0 yard lines (5 rows of 3)
-   • Sit for 5 s, then fly to (0,0,50) using PID (in ECE_UAV.cpp)
-   • When they hit the virtual sphere surface (radius 10 m, center (0,0,50))
-     they move along the surface with speed 2–10 m/s
-   • After all are on the sphere, they continue for 60 s, then freeze
+   Start on the football field at 0, 25, 50, 25, 0 yard lines (5 rows of 3)
+   Sit for 5 s, then fly to (0,0,50) using PID
+   When they hit the virtual sphere surface (radius 10 m, center (0,0,50))
+   they move along the surface with speed 2–10 m/s
+   After all are on the sphere, they continue for 60 s, then freeze
 */
 
 #include <iostream>
@@ -37,39 +37,46 @@ Description:
 
 #include "Vec3.h"
 #include "ECE_UAV.h"
+#include "OBJLoader.h"
 
-// -----------------------------------------------------------------------------
-// Window / field constants
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Global constants for window and field geometry
+// ---------------------------------------------------------------------------
 static const int   kWindowWidth  = 1000;
 static const int   kWindowHeight = 750;
 
-// Field Dimensions (Meters)
-// 120 yards total length (including endzones) ~ 109.7m
-// 53.3 yards width ~ 48.7m
-static const float kFieldLength  = 109.7f; 
+// Field dimensions in meters. Length is along y, width is along x.
+static const float kFieldLength  = 118.44f; 
 static const float kFieldWidth   = 48.76f; 
 
 static const int   kNumUAVs      = 15;
 
-// -----------------------------------------------------------------------------
-// Global state
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Global simulation state
+// ---------------------------------------------------------------------------
 static std::vector<std::unique_ptr<ECE_UAV>> g_uavs;
+static Mesh g_uavMesh;
+static bool g_haveMesh = false;
 
 static GLuint g_fieldTexture = 0;
 static bool   g_haveTexture  = false;
 
-// -----------------------------------------------------------------------------
-// Forward declarations
-// -----------------------------------------------------------------------------
+static GLuint g_uavTexture   = 0;
+static bool   g_haveUavTex   = false;
+
+
+// Forward declarations of GLUT callbacks
 void displayCallback();
 void reshapeCallback(int width, int height);
 void timerCallback(int value);
 
-// -----------------------------------------------------------------------------
-// BMP loader (24-bit)
-// -----------------------------------------------------------------------------
+/*
+ * Function: loadBMPTexture
+ * Purpose : Load a 24-bit BMP file from disk into an OpenGL 2D texture.
+ * Input   : filename - C-style string giving the path to the BMP file.
+ * Output  : None (texture data is uploaded into OpenGL).
+ * Return  : GLuint texture id created by OpenGL, or 0 if loading fails.
+ */
 GLuint loadBMPTexture(const char* filename)
 {
     std::ifstream file(filename, std::ios::binary);
@@ -80,28 +87,34 @@ GLuint loadBMPTexture(const char* filename)
         return 0;
     }
 
+    // Read the 54 byte BMP header.
     unsigned char header[54];
     if (!file.read(reinterpret_cast<char*>(header), 54))
         return 0;
 
+    // Very simple validity check: first two characters must be "BM".
     if (header[0] != 'B' || header[1] != 'M')
         return 0;
 
+    // Extract header fields we care about.
     unsigned int dataPos   = *reinterpret_cast<unsigned int*>(&header[0x0A]);
     unsigned int imageSize = *reinterpret_cast<unsigned int*>(&header[0x22]);
     unsigned int width     = *reinterpret_cast<unsigned int*>(&header[0x12]);
     unsigned int height    = *reinterpret_cast<unsigned int*>(&header[0x16]);
 
+    // Some BMP writers leave these as zero, so compute defaults if needed.
     if (imageSize == 0)
         imageSize = width * height * 3;
     if (dataPos == 0)
         dataPos = 54;
 
+    // Read raw BGR pixel data.
     std::vector<unsigned char> data(imageSize);
     file.seekg(dataPos);
     file.read(reinterpret_cast<char*>(data.data()), imageSize);
     file.close();
 
+    // Create and configure an OpenGL texture.
     GLuint textureID;
     glGenTextures(1, &textureID);
     glBindTexture(GL_TEXTURE_2D, textureID);
@@ -111,6 +124,7 @@ GLuint loadBMPTexture(const char* filename)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
+    // Upload the BGR data as an RGB texture.
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB,
                  width, height, 0,
                  GL_BGR, GL_UNSIGNED_BYTE,
@@ -119,28 +133,29 @@ GLuint loadBMPTexture(const char* filename)
     return textureID;
 }
 
-// -----------------------------------------------------------------------------
-// UAV initialization – 5 Rows (Yard Lines) x 3 Cols (Width)
-// -----------------------------------------------------------------------------
+/*
+ * Function: initUAVs
+ * Purpose : Create the 15 ECE_UAV objects and place them on the field
+ *           at the 0, 25, 50, 25, 0 yard lines as shown in the project spec.
+ * Input   : None.
+ * Output  : Populates the global vector g_uavs and starts each UAV thread.
+ * Return  : None.
+ */
 void initUAVs()
 {
     g_uavs.clear();
 
-    // Yard lines converted to meters from the center (50 yard line = 0)
-    // 0 yard line = 50 yards away = 45.72m
-    // 25 yard line = 25 yards away = 22.86m
-    // 50 yard line = 0m
+    // Yard lines (in meters) relative to field center at the 50 yard line.
     std::vector<double> yRows = 
     {
-        -45.72, // South Goal Line (0 yd line)
-        -22.86, // South 25 yd line
-        0.0,    // Center 50 yd line
-        22.86,  // North 25 yd line
-        45.72   // North Goal Line (0 yd line)
+        -45.72, 
+        -22.86,
+        0.0,   
+        22.86,  
+        45.72   
     };
 
-    // 3 UAVs across the width per row
-    // Spaced out by 15 meters: Left(-15), Center(0), Right(15)
+    // Three UAVs across the width for each yard line.
     std::vector<double> xCols = { -15.0, 0.0, 15.0 };
 
     int idCounter = 0;
@@ -148,20 +163,27 @@ void initUAVs()
     {
         for (double x : xCols)
         {
+            // Start all UAVs at ground level (z = 0).
             Vec3 startPos(x, y, 0.0);
             auto uav = std::make_unique<ECE_UAV>(idCounter, startPos, kNumUAVs);
-            uav->start();
+            uav->start();                  // Launch control thread for this UAV.
             g_uavs.push_back(std::move(uav));
             ++idCounter;
         }
     }
 }
 
-// -----------------------------------------------------------------------------
-// Draw textured field
-// -----------------------------------------------------------------------------
+/*
+ * Function: drawField
+ * Purpose : Render the football field as a textured rectangle centered
+ *           at the origin on the z = 0 plane.
+ * Input   : None.
+ * Output  : Issues OpenGL draw calls to render the field.
+ * Return  : None.
+ */
 void drawField()
 {
+    // Basic material so lighting interacts with the field.
     GLfloat mat_ambient[]  = { 0.4f, 0.4f, 0.4f, 1.0f };
     GLfloat mat_diffuse[]  = { 0.9f, 0.9f, 0.9f, 1.0f };
     GLfloat mat_specular[] = { 0.0f, 0.0f, 0.0f, 1.0f };
@@ -169,6 +191,7 @@ void drawField()
     glMaterialfv(GL_FRONT, GL_DIFFUSE,  mat_diffuse);
     glMaterialfv(GL_FRONT, GL_SPECULAR, mat_specular);
 
+    // Bind the field texture if it loaded correctly.
     if (g_haveTexture)
     {
         glEnable(GL_TEXTURE_2D);
@@ -184,66 +207,46 @@ void drawField()
     float hw = kFieldWidth  * 0.5f;
     float hl = kFieldLength * 0.5f;
 
+    // Draw a single textured quad for the field.
     glBegin(GL_QUADS);
     glNormal3f(0.0f, 0.0f, 1.0f);
-
-    // Texture Mapping Rotated 90 degrees so the "Long" side of image 
-    // maps to the "Long" side of the geometry (Y-axis).
     
-    // Bottom-Left of Geometry (-hw, -hl) -> Map to Left-Top of Image (0, 1)
-    // (Assuming image is horizontal landscape)
-    
-    // Note: Adjust these coords if your specific bitmap is oriented differently.
-    // Standard logic: Texture U (0->1) is width, V (0->1) is height.
-    // We want Texture Width to run along Field Length (Y).
-    
-    glTexCoord2f(1.0f, 0.0f); glVertex3f(-hw, -hl, 0.0f); // SW corner
-    glTexCoord2f(1.0f, 1.0f); glVertex3f( hw, -hl, 0.0f); // SE corner
-    glTexCoord2f(0.0f, 1.0f); glVertex3f( hw,  hl, 0.0f); // NE corner
-    glTexCoord2f(0.0f, 0.0f); glVertex3f(-hw,  hl, 0.0f); // NW corner
+    glTexCoord2f(0.0f, 0.0f); glVertex3f(-hw, -hl, 0.0f); // SW
+    glTexCoord2f(0.0f, 1.0f); glVertex3f( hw, -hl, 0.0f); // SE
+    glTexCoord2f(1.0f, 1.0f); glVertex3f( hw,  hl, 0.0f); // NE
+    glTexCoord2f(1.0f, 0.0f); glVertex3f(-hw,  hl, 0.0f); // NW
 
     glEnd();
     glDisable(GL_TEXTURE_2D);
 }
 
-// -----------------------------------------------------------------------------
-// Draw virtual wireframe sphere (center (0,0,50), radius 10)
-// -----------------------------------------------------------------------------
-void drawVirtualSphere()
-{
-    glDisable(GL_TEXTURE_2D);
-
-    glPushMatrix();
-    glTranslatef(0.0f, 0.0f, 50.0f);
-    glColor3f(0.7f, 0.7f, 0.9f);
-    glutWireSphere(10.0, 24, 24);
-    glPopMatrix();
-}
-
-// -----------------------------------------------------------------------------
-// Display callback
-// -----------------------------------------------------------------------------
+/*
+ * Function: displayCallback
+ * Purpose : GLUT display callback. Sets up the camera, positions the light,
+ *           draws the field, and draws all UAVs at their current locations.
+ * Input   : None (GLUT callback signature has no explicit parameters).
+ * Output  : Renders one frame to the OpenGL back buffer.
+ * Return  : None.
+ */
 void displayCallback()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
-    // Camera: back and up, looking toward the origin
-    gluLookAt(0.0, -110.0, 55.0,
-            0.0,    0.0, 20.0,
-            0.0,    0.0,  1.0);
+    // Camera placed above and behind one corner, looking toward origin.
+    gluLookAt(100.0, -60.0, 100.0,  
+              0.0,    0.0,   0.0,  
+              0.0,    0.0,   1.0); 
 
-    // Rotate world so field length runs horizontally across the screen
-    glRotatef(90.0f, 0.0f, 0.0f, 1.0f);
-
+    // Simple single positional light.
     GLfloat light_pos[] = { 80.0f, -40.0f, 140.0f, 1.0f };
     glLightfv(GL_LIGHT0, GL_POSITION, light_pos);
 
+    // Draw the football field.
     drawField();
-    drawVirtualSphere();
 
-    // Draw UAVs
+    // Draw each UAV using its current simulated position.
     for (const auto& uav : g_uavs)
     {
         Vec3 pos, vel;
@@ -254,22 +257,54 @@ void displayCallback()
                      static_cast<float>(pos.y),
                      static_cast<float>(pos.z));
 
-        GLfloat mat_col[] = { 0.9f, 0.1f, 0.1f, 1.0f };
-        glMaterialfv(GL_FRONT, GL_DIFFUSE, mat_col);
+        if (g_haveMesh)
+        {
+            // Optionally enable the metal texture for the UAV mesh.
+            if (g_haveUavTex)
+            {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, g_uavTexture);
+            }
 
-        glutSolidSphere(0.3, 16, 16);
+            GLfloat mat_diff[]    = { 1.0f, 1.0f, 1.0f, 1.0f };
+            GLfloat mat_spec[]    = { 0.3f, 0.3f, 0.3f, 1.0f };
+            GLfloat mat_shininess[] = { 20.0f };
+            glMaterialfv(GL_FRONT, GL_DIFFUSE,  mat_diff);
+            glMaterialfv(GL_FRONT, GL_SPECULAR, mat_spec);
+            glMaterialfv(GL_FRONT, GL_SHININESS, mat_shininess);
+
+            // Draw the loaded OBJ mesh representing the UAV.
+            g_uavMesh.draw();
+
+            if (g_haveUavTex)
+                glDisable(GL_TEXTURE_2D);
+        }
+        else
+        {
+            // Fallback: draw a simple red sphere if no mesh is loaded.
+            GLfloat mat_col[] = { 1.0f, 0.0f, 0.0f, 1.0f };
+            glMaterialfv(GL_FRONT, GL_DIFFUSE, mat_col);
+            glutSolidSphere(1.0, 16, 16); 
+        }
+
         glPopMatrix();
     }
 
     glutSwapBuffers();
 }
 
-
-// -----------------------------------------------------------------------------
-// Timer: simple collision handling + redraw
-// -----------------------------------------------------------------------------
+/*
+ * Function: timerCallback
+ * Purpose : GLUT timer callback that performs simple collision handling
+ *           between UAVs and triggers a redraw at regular intervals.
+ * Input   : value - integer passed by GLUT (unused here).
+ * Output  : Updates UAV velocities when they are too close and schedules
+ *           the next timer event and redraw.
+ * Return  : None.
+ */
 void timerCallback(int)
 {
+    // Check all unordered pairs of UAVs for potential collisions.
     for (size_t i = 0; i < g_uavs.size(); ++i)
     {
         for (size_t j = i + 1; j < g_uavs.size(); ++j)
@@ -280,21 +315,29 @@ void timerCallback(int)
             g_uavs[j]->getState(p2, v2);
 
             double dist = (p1 - p2).length();
-            if (dist < 0.21)   // 20cm box + margin
+            if (dist < 0.21)   
             {
+                // Simple elastic collision model: swap velocity vectors.
                 g_uavs[i]->setVelocity(v2);
                 g_uavs[j]->setVelocity(v1);
             }
         }
     }
 
+    // Request a redraw and reschedule the timer.
     glutPostRedisplay();
     glutTimerFunc(30, timerCallback, 0);
 }
 
-// -----------------------------------------------------------------------------
-// Reshape
-// -----------------------------------------------------------------------------
+/*
+ * Function: reshapeCallback
+ * Purpose : GLUT reshape callback. Updates the viewport and projection
+ *           matrix when the window size changes.
+ * Input   : width  - new window width in pixels.
+ *           height - new window height in pixels.
+ * Output  : Sets OpenGL viewport and projection matrix.
+ * Return  : None.
+ */
 void reshapeCallback(int width, int height)
 {
     if (height == 0) height = 1;
@@ -309,9 +352,14 @@ void reshapeCallback(int width, int height)
     glMatrixMode(GL_MODELVIEW);
 }
 
-// -----------------------------------------------------------------------------
-// OpenGL init
-// -----------------------------------------------------------------------------
+/*
+ * Function: initOpenGL
+ * Purpose : One-time OpenGL initialization. Enables depth testing,
+ *           lighting, and sets global lighting and clear color.
+ * Input   : None.
+ * Output  : Configures OpenGL state machine for the simulation.
+ * Return  : None.
+ */
 void initOpenGL()
 {
     glEnable(GL_DEPTH_TEST);
@@ -325,32 +373,56 @@ void initOpenGL()
     glLightfv(GL_LIGHT0, GL_AMBIENT, ambient);
     glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
 
-    // NEW: darker navy-blue background
+    // Dark navy blue background for the night sky.
     glClearColor(0.02f, 0.05f, 0.20f, 1.0f);
 }
 
-// -----------------------------------------------------------------------------
-// main
-// -----------------------------------------------------------------------------
+/*
+ * Function: main
+ * Purpose : Program entry point. Sets up GLUT, OpenGL state, loads textures
+ *           and OBJ mesh, initializes the UAVs, and hands control to GLUT.
+ * Input   : argc - number of command line arguments.
+ *           argv - array of C-style strings for each argument. Optionally
+ *                  argv[1] can override the default OBJ file name.
+ * Output  : Creates the window and starts the GLUT event loop.
+ * Return  : int status code for the operating system (0 on normal exit).
+ */
 int main(int argc, char** argv)
 {
+    std::string objPath = "Torus.obj";
+    if (argc >= 2) objPath = argv[1];
+
+    // Initialize GLUT and create the rendering window.
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(kWindowWidth, kWindowHeight);
     glutCreateWindow("ECE 4122 Final Project - UAV Show");
 
+    // Set up core OpenGL state (lighting, depth test, clear color).
     initOpenGL();
 
+    // Load the UAV mesh and scale it so its bounding box is about 1.5 meters.
+    g_haveMesh = g_uavMesh.loadFromOBJ(objPath, 1.5);
+
+    // Load the football field texture (ff.bmp) and mark if it is valid.
     g_fieldTexture = loadBMPTexture("ff.bmp");
     if (g_fieldTexture != 0)
         g_haveTexture = true;
+    
+    // Load the metal texture for the UAV mesh (metal.bmp).
+    g_uavTexture = loadBMPTexture("metal.bmp");
+    if (g_uavTexture != 0)
+        g_haveUavTex = true;
 
+    // Create and start all UAVs in their initial field positions.
     initUAVs();
 
+    // Register GLUT callbacks.
     glutDisplayFunc(displayCallback);
     glutReshapeFunc(reshapeCallback);
     glutTimerFunc(30, timerCallback, 0);
 
+    // Enter the GLUT main loop. This will not return under normal operation.
     glutMainLoop();
     return 0;
 }

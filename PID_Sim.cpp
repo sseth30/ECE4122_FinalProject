@@ -46,7 +46,6 @@ public:
           integral_limit(integral_limit), output_limit(output_limit) {}
     
     double calculate(double error, double dt) {
-        // Proportional term
         double p_term = kp * error;
         
         // Integral term with anti-windup
@@ -95,16 +94,14 @@ private:
     Vec3 velocity;
     Vec3 acceleration;
     double mass;
-    double max_force_per_axis;  // Maximum force per axis
+    double max_force_per_axis;  
     double drag_coefficient;
     double gravity_compensation;
     
-    // PID controllers for each axis
     PIDController pid_x;
     PIDController pid_y;
     PIDController pid_z;
     
-    // Velocity controller (cascade control)
     PIDController pid_vx;
     PIDController pid_vy;
     PIDController pid_vz;
@@ -114,12 +111,10 @@ public:
         : position(initial_pos), velocity(0, 0, 0), acceleration(0, 0, 0),
           mass(mass), max_force_per_axis(max_force), drag_coefficient(0.05) {
         
-        // Position PID controllers - generates desired velocity
         pid_x.setGains(4.0, 0.2, 2.0);   // P, I, D gains for X position
         pid_y.setGains(4.0, 0.2, 2.0);   // P, I, D gains for Y position
         pid_z.setGains(5.0, 0.3, 2.5);   // Higher gains for Z (altitude)
         
-        // Velocity PID controllers - generates force commands
         pid_vx.setGains(3.0, 0.1, 0.5);  // X velocity control
         pid_vy.setGains(3.0, 0.1, 0.5);  // Y velocity control
         pid_vz.setGains(4.0, 0.2, 0.8);  // Z velocity control
